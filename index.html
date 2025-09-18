@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Live Crypto Dashboard</title>
+
+    <!-- Tailwind CDN for quick prototyping (use a build for production) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Basic Tailwind config for dark theme
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        accent: '#7c3aed',
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Fonts & icons -->
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet" />
+    <style>
+        body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+        /* Smooth small scrollbar for dark theme */
+        ::-webkit-scrollbar { height: 10px; width: 10px; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 999px; }
+    </style>
+
+    <!-- Lightweight Charts for candlestick + line charts -->
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+
+    <!-- React + ReactDOM + Babel for in-browser JSX (prototype/demo). For production use a build process -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <meta name="description" content="Modern responsive live cryptocurrency dashboard using CoinGecko API." />
+</head>
+<body class="bg-gray-900 text-gray-200 antialiased dark">
+
+    <div id="root" class="min-h-screen"></div>
+
+    <!-- App Code -->
+    <script type="text/babel">
+
+// GitHub Copilot
+const { useState, useEffect, useRef } = React;
+
+/*
+    Notes:
+    - Uses CoinGecko public API (no API key required). For higher rate limits consider API keys / paid endpoints.
+    - For production: replace Babel/browser React CDN with a proper build (Vite/CRA), and precompile Tailwind.
+*/
+
+// ---------- Utilities ----------
+const COINGECKO_BASE = 'https://api.coingecko.com/api/v3';
+const DEFAULT_VS = 'usd';
+const TOP_COINS = ['bitcoin', 'ethereum', 'tether', 'bnb', 'usd-coin', 'ripple', 'cardano', 'dogecoin', 'matic-network', 'solana'];
+
+async function fetchMarkets({ page = 1, per_page = 50, ids = '' } = {}) {
+    const idsQuery = ids ? `&ids=${ids}` : '';
+    const url = `${COINGECKO_BASE}/coins/markets?vs_currency=${DEFAULT_VS}&order=market_cap_desc&per_page=${per_page}&page=${page}&sparkline=false&price_change_percentage=24h${idsQuery}`;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('Failed to fetch markets');
+    return resp.json();
+}
+
+async function fetchOHLC(id, days = 1) {
+    // returns [timestamp, open, high, low, close]
+    const url = `${COINGECKO_BASE}/coins/${id}/ohlc?vs_currency=${DEFAULT_VS}&days=${days}`;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('Failed to fetch ohlc');
+    return resp.json();
+}
+
+async function fetchMarketChartPrices(id, days = 1) {
+    // used for line overlay: returns [timestamp, price]
+    const url = `${COINGECKO_BASE}/coins/${id}/market_chart?vs_currency=${DEFAULT_VS}&days=${days}`;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('Failed to fetch market chart');
+    const json = await resp.json();
+    return json.prices || [];
+}
+
+// Local storage watchlist
+const WATCHKEY = 'crypto:watchlist';
+function loadWatchlist() {
+    try {
+        const raw = localStorage.getItem(WATCHKEY);
+        return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+}
+function saveWatchlist(list) {
+    localStorage.setItem(WATCHKEY, JSON.stringify(list));
+}
+
+// ---------- Components ----------
+
+function NavBar({ onToggleTheme }) {
+    return (
+        <header className="w-full bg-gray-800/40 backdrop-blur sticky top-0 z-30">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div className="flex items-center justify-between h-16">
+                    <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2">
+                            <div className="w-10 h-10 bg-gradient-to-br from-accent to-purple-700 rounded-full flex items-center justify-center text-white font-bold shadow">
+                                C
+                            </div>
+                            <div>
+                                <div className="text-white font-semibold">CryptoDash</div>
+                                <div className="text-xs text-gray-400">Live Market</div>
+                            </div>
+                        </div>
+                        <nav className="hidden md:flex items-center gap-4 ml-6">
+                            <a className="text-gray-300 hover:text-white transition" href="#dashboard">Dashboard</a>
+                            <a className="text-gray-300 hover:text-white transition" href="#coins">Coins</a>
+                            <a className="text-gray-300 hover:text-white transition" href="#watchlist">Watchlist</a>
+                        </nav>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                        <button onClick={onToggleTheme} className="text-gray-300 hover:text-white p-2 rounded transition" title="Toggle theme">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 3v1m0 16v1m8.66-8.66h-1M4.34 12h-1M18.36 5.64l-.7.7M6.34 17.66l-.7.7M18.36 18.36l-.7-.7M6.34 6.34l-.7-.7M12 5a7 7 0 000 14 7 7 0 000-14z" />
+                            </svg>
+                        </button>
+                        <a className="hidden sm:inline-block bg-accent hover:opacity-90 text-white px-4 py-2 rounded-md transition" href="#" title="Docs / API">
+                            API Info
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </header>
+    );
+}
+
+function PriceTicker({ coins }) {
+    // Simple horizontally scrolling ticker
+    return (
+        <div className="w-full overflow-hidden border-b border-gray-800">
+            <div className="whitespace-nowrap animate-marquee py-2">
+                {coins.map((c, i) => (
+                    <div key={c.id} className="inline-flex items-center gap-4 px-6">
+                        <img src={c.image} alt={c.symbol} className="w-6 h-6 rounded-full" />
+                        <div className="text-sm">
+                            <div className="font-semibold">{c.symbol.toUpperCase()}</div>
+                            <div className="text-xs text-gray-400">${Number(c.current_price).toLocaleString()}</div>
+                        </div>
+                        <div className={`ml-3 text-sm ${c.price_change_percentage_24h >= 0 ? 'text-green-400' : 'text-red-400'} font-medium`}>
+                            {c.price_change_percentage_24h ? c.price_change_percentage_24h.toFixed(2) + '%' : '—'}
+                        </div>
+                    </div>
+                ))}
+            </div>
+
+            <style>{`
+                @keyframes marquee {
+                    0% { transform: translateX(0%); }
+                    100% { transform: translateX(-50%); }
+                }
+                .animate-marquee { display: inline-block; animation: marquee 20s linear infinite; }
+            `}</style>
+        </div>
+    );
+}
+
+function CoinCard({ coin, onOpenChart, isFavorite, onToggleFav }) {
+    const change = coin.price_change_percentage_24h;
+    const changeClass = change >= 0 ? 'text-green-400' : 'text-red-400';
+    return (
+        <div className="bg-gray-800/60 border border-gray-800 hover:border-gray-700 p-4 rounded-lg transition shadow-sm">
+            <div className="flex justify-between items-start gap-3">
+                <div className="flex items-center gap-3">
+                    <img src={coin.image} alt={coin.symbol} className="w-10 h-10 rounded-full" />
+                    <div>
+                        <div className="font-semibold">{coin.name} <span className="text-xs text-gray-400 ml-1">({coin.symbol.toUpperCase()})</span></div>
+                        <div className="text-sm text-gray-400">${Number(coin.current_price).toLocaleString()}</div>
+                    </div>
+                </div>
+                <div className="flex items-center gap-2">
+                    <button onClick={() => onOpenChart(coin)} className="text-gray-300 hover:text-white p-2 rounded transition" title="Open chart">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 3v18M20 12H4" /></svg>
+                    </button>
+                    <button onClick={() => onToggleFav(coin.id)} className={`p-2 rounded transition ${isFavorite ? 'text-yellow-400' : 'text-gray-300 hover:text-white'}`} title="Toggle favorite">
+                        {isFavorite ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.95a1 1 0 00.95.69h4.163c.969 0 1.371 1.24.588 1.81l-3.37 2.447a1 1 0 00-.364 1.118l1.286 3.95c.3.921-.755 1.688-1.54 1.118L10 15.347l-3.369 2.447c-.784.57-1.84-.197-1.54-1.118l1.286-3.95a1 1 0 00-.364-1.118L2.633 9.377c-.783-.57-.38-1.81.588-1.81h4.163a1 1 0 00.95-.69l1.286-3.95z" /></svg>
+                        ) : (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.95a1 1 0 00.95.69h4.163c.969 0 1.371 1.24.588 1.81l-3.37 2.447a1 1 0 00-.364 1.118l1.286 3.95c.3.921-.755 1.688-1.54 1.118L12 15.347l-3.369 2.447c-.784.57-1.84-.197-1.54-1.118l1.286-3.95a1 1 0 00-.364-1.118L2.633 9.377c-.783-.57-.38-1.81.588-1.81h4.163a1 1 0 00.95-.69l1.286-3.95z" /></svg>
+                        )}
+                    </button>
+                </div>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
+                <div className="text-xs text-gray-400">24h</div>
+                <div className={`text-right font-medium ${changeClass}`}>{change ? change.toFixed(2) + '%' : '—'}</div>
+
+                <div className="text-xs text-gray-400">Market Cap</div>
+                <div className="text-right">{coin.market_cap ? '$' + Number(coin.market_cap).toLocaleString() : '—'}</div>
+
+                <div className="text-xs text-gray-400">Volume</div>
+                <div className="text-right">${coin.total_volume ? Number(coin.total_volume).toLocaleString() : '—'}</div>
+
+                <div className="text-xs text-gray-400">Circulating</div>
+                <div className="text-right">{coin.circulating_supply ? Number(coin.circulating_supply).toLocaleString() : '—'}</div>
+            </div>
+        </div>
+    );
+}
+
+function ChartModal({ coin, onClose }) {
+    const ref = useRef();
+    const chartRef = useRef();
+    const candleSeriesRef = useRef();
+    const lineSeriesRef = useRef();
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        if (!coin) return;
+        setLoading(true);
+
+        // Create chart
+        const el = ref.current;
+        el.innerHTML = '';
+        const chart = LightweightCharts.createChart(el, {
+            width: el.clientWidth,
+            height: 360,
+            layout: {
+                backgroundColor: '#0b1220',
+                textColor: '#d1d5db'
+            },
+            grid: {
+                vertLines: { color: '#1f2937' },
+                horzLines: { color: '#1f2937' }
+            },
+            rightPriceScale: { borderColor: '#111827' },
+            timeScale: { borderColor: '#111827' }
+        });
+        chartRef.current = chart;
+        candleSeriesRef.current = chart.addCandlestickSeries({
+            upColor: '#26a69a',
+            downColor: '#ef5350',
+            borderDownColor: '#ef5350',
+            borderUpColor: '#26a69a',
+            wickDownColor: '#ef5350',
+            wickUpColor: '#26a69a'
+        });
+        lineSeriesRef.current = chart.addLineSeries({ color: '#7c3aed', lineWidth: 2 });
+
+        let mounted = true;
+        async function loadData() {
+            try {
+                const ohlc = await fetchOHLC(coin.id, 1); // last 1 day
+                const prices = await fetchMarketChartPrices(coin.id, 1);
+                // Map ohlc to chart format
+                const candleData = ohlc.map(pt => ({
+                    time: Math.floor(pt[0] / 1000),
+                    open: pt[1],
+                    high: pt[2],
+                    low: pt[3],
+                    close: pt[4]
+                }));
+                const lineData = prices.map(p => ({ time: Math.floor(p[0] / 1000), value: p[1] }));
+
+                if (!mounted) return;
+                candleSeriesRef.current.setData(candleData);
+                lineSeriesRef.current.setData(lineData);
+                setLoading(false);
+
+                // simple polling to append latest point (not exact OHLC but close)
+                const poll = setInterval(async () => {
+                    try {
+                        const markets = await fetchMarkets({ per_page: 250, ids: coin.id });
+                        if (markets && markets[0]) {
+                            const now = Math.floor(Date.now() / 1000);
+                            // Update line with current price
+                            lineSeriesRef.current.update({ time: now, value: markets[0].current_price });
+                            // Optionally update last candle's close
+                        }
+                    } catch (e) { /* ignore */ }
+                }, 8000);
+
+                return () => clearInterval(poll);
+            } catch (e) {
+                console.error(e);
+                setLoading(false);
+            }
+        }
+
+        loadData();
+
+        function handleResize() {
+            chart.applyOptions({ width: el.clientWidth });
+        }
+        window.addEventListener('resize', handleResize);
+
+        return () => {
+            mounted = false;
+            chart.remove();
+            window.removeEventListener('resize', handleResize);
+        };
+    }, [coin]);
+
+    if (!coin) return null;
+
+    return (
+        <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/60 backdrop-blur" onClick={onClose}></div>
+            <div className="relative max-w-4xl w-full bg-gray-900 border border-gray-800 rounded-lg overflow-hidden shadow-xl">
+                <div className="flex items-center justify-between p-4 border-b border-gray-800">
+                    <div className="flex items-center gap-3">
+                        <img src={coin.image} alt={coin.symbol} className="w-8 h-8 rounded-full" />
+                        <div>
+                            <div className="font-semibold">{coin.name} <span className="text-sm text-gray-400">({coin.symbol.toUpperCase()})</span></div>
+                            <div className="text-xs text-gray-400">Live candlestick + price line (last 24h)</div>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <div className="text-sm text-gray-400 mr-2">${coin.current_price ? Number(coin.current_price).toLocaleString() : '—'}</div>
+                        <button onClick={onClose} className="text-gray-300 hover:text-white p-2 rounded transition">
+                            Close
+                        </button>
+                    </div>
+                </div>
+
+                <div className="p-4">
+                    {loading && <div className="text-center text-sm text-gray-400 py-10">Loading chart…</div>}
+                    <div ref={ref} className="w-full rounded" style={{ minHeight: 360 }} />
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function Dashboard() {
+    const [coins, setCoins] = useState([]);
+    const [page, setPage] = useState(1);
+    const [perPage] = useState(12);
+    const [query, setQuery] = useState('');
+    const [selectedCoin, setSelectedCoin] = useState(null);
+    const [watchlist, setWatchlist] = useState(loadWatchlist());
+    const [topTicker, setTopTicker] = useState([]);
+    const [loading, setLoading] = useState(true);
+
+    // initial fetch + polling
+    useEffect(() => {
+        let mounted = true;
+        async function load() {
+            setLoading(true);
+            try {
+                const data = await fetchMarkets({ per_page: 100, page: 1 });
+                if (!mounted) return;
+                setCoins(data);
+                // pick top coins for ticker
+                const ticker = data.filter(c => TOP_COINS.includes(c.id)).slice(0, 10);
+                setTopTicker(ticker);
+                setLoading(false);
+            } catch (e) {
+                console.error(e);
+                setLoading(false);
+            }
+        }
+        load();
+        const poll = setInterval(load, 9000);
+        return () => { mounted = false; clearInterval(poll); };
+    }, []);
+
+    // favorites
+    function toggleFav(id) {
+        setWatchlist(prev => {
+            const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+            saveWatchlist(next);
+            return next;
+        });
+    }
+
+    const filtered = coins.filter(c => {
+        const q = query.trim().toLowerCase();
+        if (!q) return true;
+        return c.name.toLowerCase().includes(q) || c.symbol.toLowerCase().includes(q);
+    });
+
+    const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
+    useEffect(() => { if (page > totalPages) setPage(1); }, [filtered.length]);
+
+    const paginated = filtered.slice((page - 1) * perPage, page * perPage);
+
+    return (
+        <main className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
+            <section id="dashboard" className="mb-6">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <div className="lg:col-span-2">
+                        <div className="flex items-center justify-between">
+                            <h2 className="text-xl font-semibold">Market Overview</h2>
+                            <div className="text-sm text-gray-400">Prices in USD · Updated live</div>
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                            <div className="bg-gradient-to-br from-gray-800/60 to-gray-800/50 p-4 rounded-lg border border-gray-800">
+                                <div className="text-xs text-gray-400">Top Coin</div>
+                                <div className="mt-2 flex items-center justify-between">
+                                    <div>
+                                        <div className="text-sm text-gray-400">{topTicker[0]?.name || '—'}</div>
+                                        <div className="text-lg font-semibold">${topTicker[0]?.current_price ? Number(topTicker[0].current_price).toLocaleString() : '—'}</div>
+                                    </div>
+                                    <div className={`text-sm ${topTicker[0]?.price_change_percentage_24h >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                        {topTicker[0]?.price_change_percentage_24h ? topTicker[0].price_change_percentage_24h.toFixed(2) + '%' : '—'}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bg-gradient-to-br from-gray-800/60 to-gray-800/50 p-4 rounded-lg border border-gray-800">
+                                <div className="text-xs text-gray-400">Total Market Cap (sample)</div>
+                                <div className="mt-2">
+                                    <div className="text-lg font-semibold">${coins.slice(0, 8).reduce((s,c)=>s+(c.market_cap||0),0).toLocaleString()}</div>
+                                </div>
+                            </div>
+
+                            <div className="bg-gradient-to-br from-gray-800/60 to-gray-800/50 p-4 rounded-lg border border-gray-800">
+                                <div className="text-xs text-gray-400">24h Volume (sample)</div>
+                                <div className="mt-2">
+                                    <div className="text-lg font-semibold">${coins.slice(0, 8).reduce((s,c)=>s+(c.total_volume||0),0).toLocaleString()}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="mt-6 bg-gray-800/50 border border-gray-800 p-4 rounded-lg">
+                            <div className="flex items-center justify-between">
+                                <div className="text-sm text-gray-400">Live Ticker</div>
+                                <div className="text-xs text-gray-400">Updates every 9s</div>
+                            </div>
+                            <div className="mt-3">
+                                <PriceTicker coins={topTicker.length ? topTicker : coins.slice(0,10)} />
+                            </div>
+                        </div>
+                    </div>
+
+                    <aside id="watchlist" className="space-y-4">
+                        <div className="bg-gray-800/50 p-4 rounded-lg border border-gray-800">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <div className="text-sm font-semibold">Watchlist</div>
+                                    <div className="text-xs text-gray-400">Favorited coins are saved locally</div>
+                                </div>
+                                <div className="text-xs text-gray-400">{watchlist.length} items</div>
+                            </div>
+
+                            <div className="mt-3 space-y-3">
+                                {watchlist.length === 0 && <div className="text-sm text-gray-400">No favorites yet — click the star on a coin card to add.</div>}
+                                {watchlist.map(id => {
+                                    const info = coins.find(c => c.id === id);
+                                    return info ? (
+                                        <div key={id} className="flex items-center justify-between">
+                                            <div className="flex items-center gap-3">
+                                                <img src={info.image} className="w-6 h-6 rounded-full" alt="" />
+                                                <div>
+                                                    <div className="text-sm">{info.symbol.toUpperCase()}</div>
+                                                    <div className="text-xs text-gray-400">${Number(info.current_price).toLocaleString()}</div>
+                                                </div>
+                                            </div>
+                                            <div className={`text-sm ${info.price_change_percentage_24h >= 0 ? 'text-green-400' : 'text-red-400'}`}>{info.price_change_percentage_24h ? info.price_change_percentage_24h.toFixed(2) + '%' : '—'}</div>
+                                        </div>
+                                    ) : null;
+                                })}
+                            </div>
+                        </div>
+
+                        <div className="bg-gray-800/50 p-4 rounded-lg border border-gray-800">
+                            <div className="text-sm font-semibold">Quick Actions</div>
+                            <div className="mt-3 flex gap-2">
+                                <button onClick={() => { setWatchlist([]); saveWatchlist([]); }} className="text-sm px-3 py-2 rounded bg-gray-700 hover:bg-gray-700/80 transition">Clear</button>
+                                <button onClick={() => { alert('In production you can connect wallets, alerts, or sync accounts.'); }} className="text-sm px-3 py-2 rounded bg-accent hover:opacity-90 text-white transition">Extend</button>
+                            </div>
+                        </div>
+                    </aside>
+                </div>
+            </section>
+
+            <section id="coins" className="mt-6">
+                <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-semibold">Coins</h3>
+                    <div className="flex items-center gap-3">
+                        <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search by name or symbol" className="bg-gray-800/40 border border-gray-800 rounded px-3 py-2 text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-accent" />
+                        <div className="text-sm text-gray-400">Showing {filtered.length} results</div>
+                    </div>
+                </div>
+
+                <div className="mt-4">
+                    {loading && <div className="text-center text-gray-400 py-8">Loading markets…</div>}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {paginated.map(c => (
+                            <CoinCard key={c.id} coin={c} onOpenChart={(coin)=>setSelectedCoin(coin)} isFavorite={watchlist.includes(c.id)} onToggleFav={toggleFav} />
+                        ))}
+                    </div>
+
+                    <div className="mt-6 flex items-center justify-between">
+                        <div className="text-sm text-gray-400">Page {page} / {totalPages}</div>
+                        <div className="flex items-center gap-2">
+                            <button onClick={() => setPage(p => Math.max(1, p-1))} className="px-3 py-1 rounded bg-gray-800 hover:bg-gray-800/90 text-sm">Prev</button>
+                            <button onClick={() => setPage(p => Math.min(totalPages, p+1))} className="px-3 py-1 rounded bg-gray-800 hover:bg-gray-800/90 text-sm">Next</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            {selectedCoin && <ChartModal coin={selectedCoin} onClose={() => setSelectedCoin(null)} />}
+        </main>
+    );
+}
+
+function App() {
+    const [theme, setTheme] = useState('dark');
+
+    useEffect(() => {
+        if (theme === 'dark') document.documentElement.classList.add('dark');
+        else document.documentElement.classList.remove('dark');
+    }, [theme]);
+
+    return (
+        <div className="min-h-screen">
+            <NavBar onToggleTheme={() => setTheme(prev => prev === 'dark' ? 'light' : 'dark')} />
+            <Dashboard />
+            <footer className="max-w-7xl mx-auto p-4 text-center text-xs text-gray-500">
+                Demo dashboard • Data by CoinGecko (public API). For production, use API keys and follow rate limits.
+            </footer>
+        </div>
+    );
+}
+
+// Render
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+
+    </script>
+</body>
+</html>
